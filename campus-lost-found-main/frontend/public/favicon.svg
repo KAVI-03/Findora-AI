@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48" fill="none">
+  <defs>
+    <linearGradient id="findoraGrad" x1="4" y1="4" x2="44" y2="44" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#8B5CF6"/>
+      <stop offset="50%" stop-color="#6366F1"/>
+      <stop offset="100%" stop-color="#4F46E5"/>
+    </linearGradient>
+    <linearGradient id="glowGrad" x1="16" y1="12" x2="36" y2="36" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#C4B5FD" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#818CF8" stop-opacity="0.4"/>
+    </linearGradient>
+    <filter id="subtleGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+  <!-- Rounded Base Container -->
+  <rect x="4" y="4" width="40" height="40" rx="12" fill="url(#findoraGrad)" />
+  <rect x="4" y="4" width="40" height="40" rx="12" stroke="rgba(255,255,255,0.2)" stroke-width="1.2" />
+  
+  <!-- Geometric "F" + Finding Compass Monogram -->
+  <!-- Vertical Stem of F -->
+  <rect x="14" y="13" width="5" height="22" rx="2.5" fill="#FFFFFF" />
+  
+  <!-- Top Arm with Compass Needle angle -->
+  <path d="M14 15.5C14 14.12 15.12 13 16.5 13H31.5C32.88 13 34 14.12 34 15.5C34 16.88 32.88 18 31.5 18H16.5C15.12 18 14 16.88 14 15.5Z" fill="#FFFFFF" />
+  
+  <!-- Middle Arm pointing forward -->
+  <path d="M14 24.5C14 23.12 15.12 22 16.5 22H27.5C28.88 22 30 23.12 30 24.5C30 25.88 28.88 27 27.5 27H16.5C15.12 27 14 25.88 14 24.5Z" fill="#FFFFFF" />
+  
+  <!-- Luminous Finding Beacon Core -->
+  <circle cx="31.5" cy="27.5" r="3.5" fill="#A78BFA" filter="url(#subtleGlow)" />
+  <circle cx="31.5" cy="27.5" r="2" fill="#FFFFFF" />
+</svg>

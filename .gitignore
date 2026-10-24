@@ -1,0 +1,7 @@
+.venv/
+**/.secret_key
+**/database.db
+**/users.json
+**/.env
+**/found_items/
+**/lost_items/
