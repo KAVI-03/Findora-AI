@@ -4,10 +4,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 import shutil, os, sys, time, logging
-import threading
 import uvicorn
 import hashlib
 import hmac
@@ -18,7 +16,7 @@ import json
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.join(os.path.dirname(BASE_DIR), "frontend")
 
-import faiss  # lightweight; the heavy AI stack (torch/transformers) is imported lazily below
+from matcher_siglip import LostAndFoundMatcher
 from storage_manager import StorageManager
 from database import DatabaseManager
 import chatbot
@@ -52,133 +50,7 @@ db = DatabaseManager(os.path.join(BASE_DIR, "database.db"))
 # Try to pull latest data from Hugging Face Dataset on startup
 storage.download_data(BASE_DIR)
 
-class LazyMatcher:
-    """
-    Drop-in stand-in for LostAndFoundMatcher that does NOT load the SigLIP model at startup.
-
-    * `metadata` and the FAISS `index` are available immediately (no model needed), so
-      listing items, the chatbot, status updates, etc. never load the model.
-    * The real LostAndFoundMatcher (torch + transformers + SigLIP 2) is imported and created
-      exactly once, on the first operation that really needs embeddings.
-    * A FAISS rebuild that startup detects as necessary is remembered and performed right
-      after the model loads, before any search/add uses the index.
-    """
-
-    def __init__(self, base_dir, after_rebuild=None):
-        self._base_dir = base_dir
-        self._after_rebuild = after_rebuild
-        self._lock = threading.RLock()
-        self._real = None                      # the real LostAndFoundMatcher, once loaded
-        self._index = faiss.IndexFlatIP(768)   # same dimension the real matcher uses
-        self._metadata = []
-        self._rebuild_pending = False
-
-    # ---- state that must work WITHOUT the model ----
-    @property
-    def metadata(self):
-        return self._real.metadata if self._real is not None else self._metadata
-
-    @metadata.setter
-    def metadata(self, value):
-        if self._real is not None:
-            self._real.metadata = value
-        else:
-            self._metadata = value
-
-    @property
-    def index(self):
-        return self._real.index if self._real is not None else self._index
-
-    @index.setter
-    def index(self, value):
-        if self._real is not None:
-            self._real.index = value
-        else:
-            self._index = value
-
-    @property
-    def is_loaded(self):
-        return self._real is not None
-
-    def load(self, path="./"):
-        """Read the saved FAISS index from disk (same logic as LostAndFoundMatcher.load)."""
-        if self._real is not None:
-            self._real.load(path)
-            return
-        index_file = os.path.join(path, "found_items.index")
-        if os.path.exists(index_file):
-            self._index = faiss.read_index(index_file)
-            print(f"Loaded index with {self._index.ntotal} items")
-
-    def save(self, path="./"):
-        if self._real is not None:
-            self._real.save(path)
-        else:
-            faiss.write_index(self._index, os.path.join(path, "found_items.index"))
-            print("Saved index!")
-
-    def request_rebuild(self):
-        """Remember that the FAISS index must be rebuilt from metadata (done lazily)."""
-        self._rebuild_pending = True
-
-    # ---- model loading (thread-safe, happens at most once) ----
-    def _load_model(self):
-        if self._real is None:
-            with self._lock:
-                if self._real is None:
-                    # Heavy imports (torch, transformers) happen only here.
-                    from matcher_siglip import LostAndFoundMatcher
-                    print("Lazy-loading SigLIP 2 model (first AI request)...")
-                    real = LostAndFoundMatcher()
-                    # Hand our in-memory state to the real matcher (same objects, no copies)
-                    real.index = self._index
-                    real.metadata = self._metadata
-                    self._real = real          # publish only after it is fully initialised
-        return self._real
-
-    def ensure_loaded(self):
-        """Load the model if needed and run any pending FAISS rebuild. Safe to call repeatedly."""
-        real = self._load_model()
-        if self._rebuild_pending:
-            with self._lock:
-                if self._rebuild_pending:
-                    print("Rebuilding FAISS index (deferred from startup)...")
-                    real.rebuild_index(self._base_dir)
-                    real.save(path=self._base_dir)
-                    self._rebuild_pending = False
-                    if self._after_rebuild:
-                        self._after_rebuild()
-        return real
-
-    # ---- operations that need the model ----
-    def add_found_item(self, *args, **kwargs):
-        return self.ensure_loaded().add_found_item(*args, **kwargs)
-
-    def find_matches_by_image(self, lost_img_path, top_k=3):
-        if not self.metadata:      # nothing indexed -> no results; no need to load the model
-            return []
-        return self.ensure_loaded().find_matches_by_image(lost_img_path, top_k=top_k)
-
-    def find_matches_by_text(self, text_query, top_k=6):
-        if not self.metadata:      # same early exit the real matcher has
-            return []
-        return self.ensure_loaded().find_matches_by_text(text_query, top_k=top_k)
-
-    def rebuild_index(self, base_dir):
-        real = self._load_model()
-        with self._lock:
-            real.rebuild_index(base_dir)
-            self._rebuild_pending = False   # an explicit rebuild satisfies a pending one
-
-    def __getattr__(self, name):
-        # Any other matcher attribute/method (get_embedding, model, ...) needs the model.
-        if name.startswith("_"):
-            raise AttributeError(name)
-        return getattr(self.ensure_loaded(), name)
-
-
-# The SigLIP model is NOT loaded here (keeps startup memory low); see LazyMatcher.
-matcher = LazyMatcher(BASE_DIR, after_rebuild=lambda: storage.upload_data(BASE_DIR))
+matcher = LostAndFoundMatcher()
 matcher.load(path=BASE_DIR)
 
 # Mount Static Directories
@@ -375,10 +247,10 @@ async def startup_event():
         print(f"Index mismatch detected! Metadata length: {len(matcher.metadata)}, Index length: {matcher.index.ntotal}")
         pruned = True # Force rebuild
     if pruned:
-        # Rebuilding needs the AI model, so it is deferred to the first AI request
-        # (LazyMatcher.ensure_loaded) instead of loading the model during startup.
-        print("Items pruned / index mismatch. FAISS rebuild deferred until the first AI request.")
-        matcher.request_rebuild()
+        print("Items pruned. Rebuilding FAISS index...")
+        matcher.rebuild_index(BASE_DIR)
+        matcher.save(path=BASE_DIR)
+        storage.upload_data(BASE_DIR)
         
     print(f"Items currently in database: {len(matcher.metadata)}")
     print("="*50)
@@ -526,9 +398,6 @@ async def report_found(
     authorization: str = Header(None) # Optional check to attach reporter details
 ):
     try:
-        # Load the AI model (first time only) in a worker thread, before saving anything
-        await run_in_threadpool(matcher.ensure_loaded)
-
         # Resolve reporter
         reported_by = "anonymous"
         if authorization and authorization.startswith("Bearer "):
@@ -587,9 +456,6 @@ async def report_lost(
     authorization: str = Header(None)
 ):
     try:
-        # Load the AI model (first time only) in a worker thread, before saving anything
-        await run_in_threadpool(matcher.ensure_loaded)
-
         reported_by = "anonymous"
         if authorization and authorization.startswith("Bearer "):
             token = authorization.split(" ")[1]
@@ -645,10 +511,6 @@ async def search_lost(
     try:
         os.makedirs(LOST_DIR, exist_ok=True)
         results = []
-
-        # Only load the model if there is something to search (empty index -> no results anyway)
-        if matcher.metadata:
-            await run_in_threadpool(matcher.ensure_loaded)
         
         if text_query and text_query.strip():
             print(f"DEBUG: Searching by text: {text_query}")
